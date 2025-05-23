@@ -10,56 +10,76 @@ class PendingClose(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = bot.plugin_db.get_partition(self)
-        self.category = None
-        self._threads = {}  # Keep track of active threads
+        self.pending_category = None
+        self.additional_categories = []
         asyncio.create_task(self._set_val())
 
     async def _update_db(self):
+        """Save current config to database"""
         await self.db.find_one_and_update(
-            {"_id": "config"},
-            {"$set": {"category": self.category}},
-            upsert=True,
+            {'_id': 'config'},
+            {'$set': {
+                'pending_category': self.pending_category,
+                'additional_categories': self.additional_categories
+            }},
+            upsert=True
         )
 
     async def _set_val(self):
-        config = await self.db.find_one({"_id": "config"})
-        if config:
-            self.category = config.get("category", "")
-
-    @commands.Cog.listener()
-    async def on_thread_ready(self, thread, *args):
-        """Called when thread is ready to be worked with"""
-        self._threads[thread.channel.id] = thread
+        """Retrieve configuration from database"""
+        config = await self.db.find_one({'_id': 'config'})
         
+        if config is None:
+            await self.db.find_one_and_update(
+                {'_id': 'config'},
+                {'$set': {
+                    'pending_category': None,
+                    'additional_categories': []
+                }},
+                upsert=True
+            )
+            return
+        
+        self.pending_category = config.get('pending_category')
+        self.additional_categories = config.get('additional_categories', [])
+
     @commands.Cog.listener()
-    async def on_thread_close(self, thread, *args):
-        """Remove thread from tracking when closed"""
-        self._threads.pop(thread.channel.id, None)
-
-    @commands.Cog.listener("on_message")
     async def on_message(self, message):
-        """
-        Catch the ?close command to detect scheduled closes
-        Have to do this since there's no direct event for scheduled closes
-        """
-        if not message.content.startswith(f"{self.bot.prefix}close"):
+        """Move thread to pending category when ?close is used with a time"""
+        if message.author.bot:
             return
 
-        if not message.channel.id in self._threads:
+        if not message.content.startswith(self.bot.prefix):
             return
 
-        # Check if this is a timed close (contains "in" or a time specifier)
-        content = message.content.lower()
-        if not any(x in content for x in ["in", "hour", "minute", "second"]):
+        if "close" not in message.content.lower():
             return
 
-        if not self.category:
+        # Extract the time component if it exists
+        if " in " not in message.content.lower():
             return
 
-        thread = self._threads[message.channel.id]
-        category = discord.utils.get(thread.channel.guild.categories, id=int(self.category))
-        if category and thread.channel.category_id != category.id:
-            await thread.channel.edit(category=category, reason="Thread scheduled for close (pending close).")
+        channel = message.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        if not self.pending_category:
+            return
+
+        # Check if the channel is in any of the valid categories
+        channel_category = channel.category_id
+        valid_categories = [self.pending_category] + self.additional_categories
+        
+        if channel_category not in valid_categories:
+            return
+
+        # Move the thread to pending category
+        try:
+            await channel.edit(category=self.bot.get_channel(self.pending_category))
+        except discord.Forbidden:
+            await channel.send("I don't have permission to move this channel.")
+        except Exception as e:
+            await channel.send(f"Error moving channel: {str(e)}")
 
     @commands.group(invoke_without_command=True)
     @checks.has_permissions(PermissionLevel.ADMIN)
@@ -67,7 +87,7 @@ class PendingClose(commands.Cog):
         """Configure pending close category settings"""
         embed = discord.Embed(colour=self.bot.main_color)
         embed.set_author(name="Pending Close Category Configuration:", icon_url=self.bot.user.avatar.url)
-        embed.add_field(name="Category", value=f"`{self.category}`", inline=False)
+        embed.add_field(name="Pending Category", value=f"`{self.pending_category}`", inline=False)
         embed.set_footer(text=f"To change category, use {self.bot.prefix}pendingconfig category <category ID>")
         await ctx.send(embed=embed)
 
@@ -95,14 +115,61 @@ class PendingClose(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        self.category = str(category.id)
+        self.pending_category = str(category.id)
         await self._update_db()
 
         embed = discord.Embed(
             title="Success",
             color=self.bot.main_color,
-            description=f"Category set to {category.name} (`{category.id}`)."
+            description=f"Pending category set to {category.name} (`{category.id}`)."
         )
+        await ctx.send(embed=embed)
+
+    @pendingconfig.command(name="add")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def add_category(self, ctx, *, category: int):
+        """Add a category to check for timed close commands"""
+        if category in self.additional_categories:
+            await ctx.send("This category is already in the list.")
+            return
+            
+        self.additional_categories.append(category)
+        await self._update_db()
+        await ctx.send(f"Added category {category} to the pending close check list.")
+
+    @pendingconfig.command(name="remove")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def remove_category(self, ctx, *, category: int):
+        """Remove a category from the check list"""
+        if category not in self.additional_categories:
+            await ctx.send("This category is not in the list.")
+            return
+            
+        self.additional_categories.remove(category)
+        await self._update_db()
+        await ctx.send(f"Removed category {category} from the pending close check list.")
+
+    @pendingconfig.command(name="list")
+    @checks.has_permissions(PermissionLevel.ADMINISTRATOR)
+    async def list_categories(self, ctx):
+        """List all categories being checked for timed close commands"""
+        embed = discord.Embed(
+            title="Pending Close Categories",
+            color=self.bot.main_color
+        )
+        
+        embed.add_field(
+            name="Pending Category",
+            value=f"{self.pending_category or 'Not Set'}"
+        )
+        
+        additional = "\n".join(str(cat) for cat in self.additional_categories) or "None"
+        embed.add_field(
+            name="Additional Categories",
+            value=additional,
+            inline=False
+        )
+        
         await ctx.send(embed=embed)
 
 async def setup(bot):
