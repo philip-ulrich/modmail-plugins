@@ -12,6 +12,7 @@ class PendingClose(commands.Cog):
         self.db = bot.plugin_db.get_partition(self)
         self.pending_category = None
         self.additional_categories = []
+        self.original_categories = {}  # tracks channel_id: original_category_id
         asyncio.create_task(self._set_val())
 
     async def _update_db(self):
@@ -20,7 +21,8 @@ class PendingClose(commands.Cog):
             {'_id': 'config'},
             {'$set': {
                 'pending_category': self.pending_category,
-                'additional_categories': self.additional_categories
+                'additional_categories': self.additional_categories,
+                'original_categories': self.original_categories
             }},
             upsert=True
         )
@@ -34,7 +36,8 @@ class PendingClose(commands.Cog):
                 {'_id': 'config'},
                 {'$set': {
                     'pending_category': None,
-                    'additional_categories': []
+                    'additional_categories': [],
+                    'original_categories': {}
                 }},
                 upsert=True
             )
@@ -42,6 +45,22 @@ class PendingClose(commands.Cog):
         
         self.pending_category = config.get('pending_category')
         self.additional_categories = config.get('additional_categories', [])
+        self.original_categories = config.get('original_categories', {})
+
+    async def _restore_original_category(self, channel):
+        """Restore channel to its original category"""
+        if str(channel.id) in self.original_categories:
+            try:
+                original_category_id = self.original_categories[str(channel.id)]
+                original_category = discord.utils.get(channel.guild.categories, id=int(original_category_id))
+                if original_category:
+                    await channel.edit(category=original_category)
+                del self.original_categories[str(channel.id)]
+                await self._update_db()
+                return True
+            except Exception:
+                pass
+        return False
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -63,22 +82,49 @@ class PendingClose(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
 
-        if not self.pending_category:
+        # Handle cancel command
+        if message.content.startswith(f"{self.bot.prefix}close cancel"):
+            if str(message.channel.id) in self.original_categories:
+                await self._restore_original_category(message.channel)
+                return
+
+        # Handle new user message (embedded message)
+        if message.embeds and message.author.id == self.bot.user.id:
+            for embed in message.embeds:
+                if "Scheduled close has been cancelled." in str(embed.to_dict()):
+                    await self._restore_original_category(message.channel)
+                    return
+
+        # Check for pending close command
+        if not message.content.startswith(f"{self.bot.prefix}close"):
             return
 
-        # Check if the channel is in any of the valid categories
+        if "in" not in message.content.lower():
+            return
+
+        channel = message.channel
         channel_category = channel.category_id
+
+        # Only proceed if channel is in one of our monitored categories
         valid_categories = [self.pending_category] + self.additional_categories
-        
         if channel_category not in valid_categories:
             return
 
-        # Move the thread to pending category
+        if not self.pending_category:
+            return
+
+        # Store original category and move to pending
         try:
             pending_category = discord.utils.get(channel.guild.categories, id=int(self.pending_category))
             if pending_category is None:
                 await channel.send("Could not find the pending category. Please check the configuration.")
                 return
+
+            # Store original category before moving
+            if channel.category_id != int(self.pending_category):
+                self.original_categories[str(channel.id)] = str(channel.category_id)
+                await self._update_db()
+                
             await channel.edit(category=pending_category)
         except discord.Forbidden:
             await channel.send("I don't have permission to move this channel.")
