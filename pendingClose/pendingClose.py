@@ -75,7 +75,11 @@ class PendingClose(commands.Cog):
 
         # Move the thread to pending category
         try:
-            await channel.edit(category=self.bot.get_channel(self.pending_category))
+            pending_category = discord.utils.get(channel.guild.categories, id=int(self.pending_category))
+            if pending_category is None:
+                await channel.send("Could not find the pending category. Please check the configuration.")
+                return
+            await channel.edit(category=pending_category)
         except discord.Forbidden:
             await channel.send("I don't have permission to move this channel.")
         except Exception as e:
