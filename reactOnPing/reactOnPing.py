@@ -115,3 +115,6 @@ class ReactOnPing(commands.Cog):
         self.excluded_roles.remove(str(role.id))
         await self._update_db()
         await ctx.send(f"Removed {role.name} from excluded roles.")
+
+async def setup(bot):
+    await bot.add_cog(ReactOnPing(bot))
