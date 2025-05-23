@@ -50,7 +50,8 @@ class ReactOnPing(commands.Cog):
             if not self.reaction_emoji:
                 return
                 
-            if any(role.id in self.excluded_roles for role in message.author.roles):
+            # Convert role IDs to strings for comparison since we store them as strings
+            if any(str(role.id) in self.excluded_roles for role in message.author.roles):
                 return
                 
             await message.add_reaction(self.reaction_emoji)
