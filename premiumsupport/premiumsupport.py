@@ -4,6 +4,7 @@ import datetime
 import discord
 from discord.ext import commands
 
+from bot import ModmailBot
 from core import checks
 from core.models import PermissionLevel
 
@@ -11,7 +12,7 @@ from core.models import PermissionLevel
 class PremiumSupport(commands.Cog):
     """Special support for Premium members."""
 
-    def __init__(self, bot):
+    def __init__(self, bot: ModmailBot):
         self.bot = bot
         self.db = bot.plugin_db.get_partition(self)
 
@@ -56,29 +57,36 @@ class PremiumSupport(commands.Cog):
         for role in recipient.roles:
             if role.id in self.roles:
                 premium = True
-        if premium:
 
-            class Author:
-                roles = []
+        if not premium:
+            return
 
-            class Msg:
-                content = self.message
-                author = Author
-                created_at = datetime.datetime.now()
-                id = initial_message.id
-                attachments = []
-                stickers = []
+        class Author:
+            roles = []
+            id = recipient_id
 
+        class Msg:
+            content = self.message
+            author = Author
+            created_at = datetime.datetime.now()
+            id = initial_message.id
+            attachments = []
+            stickers = []
+
+        if Msg.content:
             await thread.send(Msg, destination=recipient, from_mod=True, anonymous=True)
+
+        if self.mention:
             await thread.channel.send(self.mention)
-            if self.category:
-                await thread.channel.move(
-                    end=True,
-                    category=discord.utils.get(
-                        thread.channel.guild.channels, id=self.category
-                    ),
-                    reason="Premium support plugin.",
-                )
+
+        if self.category:
+            await thread.channel.move(
+                end=True,
+                category=discord.utils.get(
+                    thread.channel.guild.channels, id=self.category
+                ),
+                reason="Premium support plugin.",
+            )
 
     @checks.has_permissions(PermissionLevel.ADMIN)
     @commands.group(invoke_without_command=True, aliases=["pc"])
@@ -92,7 +100,7 @@ class PremiumSupport(commands.Cog):
         """
         embed = discord.Embed(colour=self.bot.main_color)
         embed.set_author(
-            name="Premium Support Configurations:", icon_url=self.bot.user.avatar_url
+            name="Premium Support Configurations:", icon_url=self.bot.user.avatar.url
         )
         embed.add_field(name="Premium Roles", value=f"`{self.roles}`", inline=False)
         embed.add_field(
@@ -146,30 +154,5 @@ class PremiumSupport(commands.Cog):
         await ctx.send(f"Premium category set to: `{self.category}`")
 
 
-def setup(bot):
-    bot.add_cog(PremiumSupport(bot))
-
-
-"""
-MIT License
-
-Copyright (c) 2019 RealCyGuy
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-"""
+async def setup(bot):
+    await bot.add_cog(PremiumSupport(bot))
