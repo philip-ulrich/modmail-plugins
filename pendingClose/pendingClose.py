@@ -11,6 +11,7 @@ class PendingClose(commands.Cog):
         self.bot = bot
         self.db = bot.plugin_db.get_partition(self)
         self.category = None
+        self._threads = {}  # Keep track of active threads
         asyncio.create_task(self._set_val())
 
     async def _update_db(self):
@@ -26,12 +27,39 @@ class PendingClose(commands.Cog):
             self.category = config.get("category", "")
 
     @commands.Cog.listener()
-    async def on_thread_close(self, thread, closer, silent, delete_channel, message, scheduled):
-        # Only move if this is a scheduled (timed) close
-        if scheduled and self.category:
-            category = discord.utils.get(thread.channel.guild.categories, id=int(self.category))
-            if category and thread.channel.category_id != category.id:
-                await thread.channel.edit(category=category, reason="Thread scheduled for close (pending close).")
+    async def on_thread_ready(self, thread, *args):
+        """Called when thread is ready to be worked with"""
+        self._threads[thread.channel.id] = thread
+        
+    @commands.Cog.listener()
+    async def on_thread_close(self, thread, *args):
+        """Remove thread from tracking when closed"""
+        self._threads.pop(thread.channel.id, None)
+
+    @commands.Cog.listener("on_message")
+    async def on_message(self, message):
+        """
+        Catch the ?close command to detect scheduled closes
+        Have to do this since there's no direct event for scheduled closes
+        """
+        if not message.content.startswith(f"{self.bot.prefix}close"):
+            return
+
+        if not message.channel.id in self._threads:
+            return
+
+        # Check if this is a timed close (contains "in" or a time specifier)
+        content = message.content.lower()
+        if not any(x in content for x in ["in", "hour", "minute", "second"]):
+            return
+
+        if not self.category:
+            return
+
+        thread = self._threads[message.channel.id]
+        category = discord.utils.get(thread.channel.guild.categories, id=int(self.category))
+        if category and thread.channel.category_id != category.id:
+            await thread.channel.edit(category=category, reason="Thread scheduled for close (pending close).")
 
     @commands.group(invoke_without_command=True)
     @checks.has_permissions(PermissionLevel.ADMIN)
