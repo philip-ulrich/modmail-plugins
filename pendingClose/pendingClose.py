@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands
 from core import checks
@@ -9,51 +10,72 @@ class PendingClose(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = bot.plugin_db.get_partition(self)
-        self.pending_close_category_id = None
-        self.bot.loop.create_task(self._load_config())
+        self.category = None
+        asyncio.create_task(self._set_val())
 
-    async def _load_config(self):
-        config = await self.db.find_one({"_id": "config"})
-        if config:
-            self.pending_close_category_id = config.get("pending_close_category_id")
-
-    async def _save_config(self):
+    async def _update_db(self):
         await self.db.find_one_and_update(
             {"_id": "config"},
-            {"$set": {"pending_close_category_id": self.pending_close_category_id}},
+            {"$set": {"category": self.category}},
             upsert=True,
         )
+
+    async def _set_val(self):
+        config = await self.db.find_one({"_id": "config"})
+        if config:
+            self.category = config.get("category", "")
 
     @commands.Cog.listener()
     async def on_thread_close(self, thread, closer, silent, delete_channel, message, scheduled):
         # Only move if this is a scheduled (timed) close
-        if scheduled and self.pending_close_category_id:
-            category = discord.utils.get(thread.channel.guild.categories, id=int(self.pending_close_category_id))
+        if scheduled and self.category:
+            category = discord.utils.get(thread.channel.guild.categories, id=int(self.category))
             if category and thread.channel.category_id != category.id:
                 await thread.channel.edit(category=category, reason="Thread scheduled for close (pending close).")
 
     @commands.group(invoke_without_command=True)
     @checks.has_permissions(PermissionLevel.ADMIN)
-    async def pendingcloseconfig(self, ctx):
-        """View the pending close category config."""
-        cat = self.pending_close_category_id or "Not set"
-        await ctx.send(f"Pending close category ID: `{cat}`")
+    async def pendingconfig(self, ctx):
+        """Configure pending close category settings"""
+        embed = discord.Embed(colour=self.bot.main_color)
+        embed.set_author(name="Pending Close Category Configuration:", icon_url=self.bot.user.avatar.url)
+        embed.add_field(name="Category", value=f"`{self.category}`", inline=False)
+        embed.set_footer(text=f"To change category, use {self.bot.prefix}pendingconfig category <category ID>")
+        await ctx.send(embed=embed)
 
-    @pendingcloseconfig.command(name="set")
+    @pendingconfig.command()
     @checks.has_permissions(PermissionLevel.ADMIN)
-    async def set_category(self, ctx, category: discord.CategoryChannel):
-        """Set the pending close category."""
-        self.pending_close_category_id = category.id
-        await self._save_config()
-        await ctx.send(f"Pending close category set to: `{category.name}` (`{category.id}`)")
+    async def category(self, ctx, category_id: str = None):
+        """Set the pending close category"""
+        if category_id is None:
+            embed = discord.Embed(
+                title="Error",
+                color=self.bot.error_color,
+                description="Please provide a category ID.",
+            )
+            return await ctx.send(embed=embed)
+            
+        try:
+            category = discord.utils.get(ctx.guild.categories, id=int(category_id))
+            if not category:
+                raise ValueError
+        except (ValueError, TypeError):
+            embed = discord.Embed(
+                title="Error",
+                description="Invalid category ID provided.",
+                color=self.bot.error_color,
+            )
+            return await ctx.send(embed=embed)
 
-    @pendingcloseconfig.command(name="clear")
-    @checks.has_permissions(PermissionLevel.ADMIN)
-    async def clear_category(self, ctx):
-        """Clear the pending close category."""
-        self.pending_close_category_id = None
-        await self._save_config()
-        await ctx.send("Pending close category cleared.")
+        self.category = str(category.id)
+        await self._update_db()
+
+        embed = discord.Embed(
+            title="Success",
+            color=self.bot.main_color,
+            description=f"Category set to {category.name} (`{category.id}`)."
+        )
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(PendingClose(bot))
